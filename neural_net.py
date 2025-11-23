@@ -5,6 +5,7 @@ import math
 import pickle
 import random
 import numpy as np
+import datetime
 
 input_vector_size = 6 # (x, y, z, alpha, beta, gamma)
 output_vector_size = 5 # (waist, shoulder, elbow, wrist, hand)
@@ -20,12 +21,12 @@ derivatives = [
 ]
 
 loss_functions = [
-    lambda h, y: [(h_i - y_i) ** 2 for h_i, y_i in zip(h, y)], # Squared loss function
-    lambda h, y: [-(h_i * math.log(y_i) + (1 - h_i) * math.log(1 - y_i)) for h_i, y_i in zip(h, y)] # Cross-entropy loss function
+    lambda expected, actual: [(expected_i - actual_i) ** 2 for expected_i, actual_i in zip(expected, actual)], # Squared loss function
+    lambda h, y: [-(expected_i * math.log(actual_i) + (1 - expected_i) * math.log(1 - actual_i)) for expected_i, actual_i in zip(expected, actual)] # Cross-entropy loss function
 ]
 
 loss_derivatives = [
-    lambda expected, actual: -2 * (expected - actual) # Derivative of squared loss function for one value
+    lambda actual, expected: -2 * (expected - actual) # Derivative of squared loss function for one value
 ]
 
 def is_catastrophic_failure(angles: list[float]) -> bool:
@@ -34,14 +35,10 @@ def is_catastrophic_failure(angles: list[float]) -> bool:
             return True
     return False
 
-def log(log_file, average_angle_error, average_position_error, catastrophic_failures):
+def log(log_file, average_angle_error, average_position_error, catastrophic_failures, average_time):
     with open(log_file, "a") as f:
-        f.write(f"{average_angle_error},{average_position_error},{catastrophic_failures}\n")
-    print(f"Avg Angle Error: {average_angle_error}, Avg Position Error: {average_position_error}, Catastrophic Failures: {catastrophic_failures}")
-        
-def load_network(pickle_file):
-    with open(pickle_file, "rb") as f:
-        return pickle.load(f)
+        f.write(f"{average_angle_error},{average_position_error},{catastrophic_failures},{average_time}\n")
+    print(f"Avg Angle Error: {average_angle_error}, Avg Position Error: {average_position_error}, Catastrophic Failures: {catastrophic_failures}")#, Avg Time: {average_time}")
 
 def dump_network(pickle_file, nodes):
     network = []
@@ -50,6 +47,7 @@ def dump_network(pickle_file, nodes):
         for node in layer:
             arr.append((node.weights, node.bias, node.layer, node.node_number))
         network.append(arr)
+    # print(network)
     with open(pickle_file, "wb") as f:
         pickle.dump(network, f)
 
@@ -65,10 +63,13 @@ def predict(nodes: list[list[Node]], inputs):
     return out
 
 def update_params(nodes, expected, actual, loss_derivative, inputs):
-    loss_derivatives = [loss_derivative(expected[i], actual[i]) for i in range(len(expected))]
+    losses = [loss_derivative(expected[i], actual[i]) for i in range(len(expected))]
+    # print(expected)
+    # print(actual)
+    # print(losses)
     for layer in reversed(nodes):
         for node in layer:
-            node.update(loss_derivatives, inputs)
+            node.update(losses, inputs)
 
 if __name__ == "__main__":
     # Syntax = python neural_net.py <hidden layers> <activation_func_number> <loss_func_number> <training rounds> <load?> <save?>
@@ -94,6 +95,7 @@ if __name__ == "__main__":
     if load: # Retrieve from file
         with open(pickle_file, "rb") as f:
             network_data = pickle.load(f)
+        print(network_data)
         nodes = []
         for layer in network_data:
             arr = []
@@ -119,10 +121,15 @@ if __name__ == "__main__":
                 arr.append(Node(activation_functions[activation_func_number], derivatives[activation_func_number], input_vector_size, nodes, layer, node_number))
             nodes.append(arr)
 
+    for layer in nodes:
+        for node in layer:
+            node.setup_gradients()
+
     training_rounds = 0
     total_angle_error = 0.0
     total_position_error = 0.0
     catastrophic_failures = 0
+    total_time = 0.0
 
     # TRAINING LOOP
     try:
@@ -130,13 +137,25 @@ if __name__ == "__main__":
             training_rounds += 1
             # scaled are between 0 and 1
             position, expected_angles, expected_scaled_angles = random_pair()
+            start = datetime.datetime.now()
             predicted_angles = predict(nodes, position)
+            end = datetime.datetime.now()
+            total_time += (end - start).total_seconds()
 
-            for layer in nodes:
-                for node in layer:
-                    node.setup_gradients()
+            # for layer in nodes:
+            #     for node in layer:
+            #         node.setup_gradients()
 
             unscaled_predicted_angles = [predicted_angles[i] * (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) + gk.jointLowerLimits[i] for i in range(len(predicted_angles))]
+            if r % 1000 == 0:
+                print(unscaled_predicted_angles)
+                print(expected_angles)
+                print()
+                print(predicted_angles)
+                print(expected_scaled_angles)
+                print()
+                print()
+
             total_angle_error += sum([abs(expected_angles[i] - unscaled_predicted_angles[i]) for i in range(len(expected_angles))])
 
             predicted_position = gk.Mat2Pose(gk.forwardKinematics(unscaled_predicted_angles))
@@ -153,13 +172,15 @@ if __name__ == "__main__":
                     dump_network(pickle_file, nodes)
 
                 average_angle_error = total_angle_error / training_rounds / 5
-                average_position_error = total_position_error / training_rounds
-                log(log_file, average_angle_error, average_position_error, catastrophic_failures)
+                average_position_error = total_position_error / training_rounds / 6
+                average_time = total_time / training_rounds
+                log(log_file, average_angle_error, average_position_error, catastrophic_failures, average_time)
 
                 training_rounds = 0
-                average_angle_error = 0.0
-                average_position_error = 0.0   
+                total_angle_error = 0.0
+                total_position_error = 0.0   
                 catastrophic_failures = 0
+                total_time = 0.0
                 
     except Exception as e: 
         print("FAILURE")

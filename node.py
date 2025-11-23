@@ -1,4 +1,4 @@
-learning_rate = 0.1
+learning_rate = 0.01
 
 class Node:
     def __init__(self, activation_function, activation_derivative, input_size: int, nodes: list[list], layer: int, node_number: int):
