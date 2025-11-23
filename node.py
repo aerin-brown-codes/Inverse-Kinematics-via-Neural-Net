@@ -1,13 +1,43 @@
-alpha = 0.1
+import autograd.numpy as np
+from autograd import grad
+
+learning_rate = 0.1
 
 class Node:
-    def __init__(self, activation_function):
-        self.weights = []
+    def __init__(self, activation_function: function, activation_derivative: function, input_size: int, nodes: list[list], layer: int, node_number: int):
+        self.weights = [0.1 for _ in range(input_size)]
         self.bias = 0.0
-        self.output_function = activation_function
+        self.activation_function = activation_function
+        self.activation_derivative = activation_derivative
+        self.path_sum = None
+        self.value = None
+        self.nodes = nodes
+        self.layer = layer
+        self.node_number = node_number
 
-    def output(self, inputs):
-        return self.activation_function(sum(w * x for w, x in zip(self.weights, inputs)) + self.bias)
+        if layer == len(nodes) - 1: # is last row
+            self.gradients = [lambda loss_derivatives: loss_derivatives[node_number] * self.activation_derivative(self.value) * self.nodes[layer - 1][i].value for i in len(self.weights)] 
+            self.bias_gradient = lambda loss_derivatives: loss_derivatives[node_number]
+        elif layer == 0: # is first row
+            self.gradients = [lambda loss_derivatives, inputs: sum([node.gradients[i](loss_derivatives) for node in nodes[layer + 1]]) * self.activation_derivative(self.value) * inputs[i] for i in len(self.weights)]
+            self.bias_gradient = lambda loss_derivatives: sum([node.bias_gradient(loss_derivatives) for node in nodes[layer + 1]]) * self.activation_derivative(self.value)
+        else:
+            self.gradients = [lambda loss_derivatives: sum([node.gradients[i](loss_derivatives) for node in nodes[layer + 1]]) * self.activation_derivative(self.value) * self.nodes[layer - 1][i].value for i in len(self.weights)]
+            self.bias_gradient = lambda loss_derivatives: sum([node.bias_gradient(loss_derivatives) for node in nodes[layer + 1]]) * self.activation_derivative(self.value)
 
-    def update(self, loss):
-        pass
+
+    def output(self, inputs: list | None) -> float:
+        if self.layer == 0:
+            self.value = self.activation_function(sum([w * i for w, i in zip(self.weights, inputs)]) + self.bias)
+        else:
+            self.value = self.activation_function(sum([self.weights[i] * self.nodes[self.layer - 1][i] for i in range(len(self.weights))]) + self.bias)
+        return self.value
+
+    def update(self, loss_derivatives = list, inputs: list | None = None):
+        if self.layer == 0:
+            for i in range(len(self.weights)):
+                self.weights[i] += learning_rate * self.gradients[i](loss_derivatives, inputs)
+        else:
+            for i in range(len(self.weights)):
+                self.weights[i] += learning_rate * self.gradients[i](loss_derivatives)
+        self.bias += learning_rate * self.bias_gradient(loss_derivatives)
