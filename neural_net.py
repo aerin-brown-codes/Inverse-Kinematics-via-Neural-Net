@@ -3,8 +3,7 @@ import geometric_kinematics as gk
 import sys
 import math
 import pickle
-import autograd.numpy as np
-from autograd import grad
+import random
 
 input_vector_size = 6 # (x, y, z, alpha, beta, gamma)
 output_vector_size = 5 # (waist, shoulder, elbow, wrist, hand)
@@ -34,9 +33,10 @@ def is_catastrophic_failure(angles: list[float]) -> bool:
             return True
     return False
 
-def log(log_file, training_rounds, average_error, catastrophic_failures):
+def log(log_file, average_angle_error, average_position_error, catastrophic_failures):
     with open(log_file, "a") as f:
-        f.write(f"{training_rounds},{average_error},{catastrophic_failures}\n")
+        f.write(f"{average_angle_error},{average_position_error},{catastrophic_failures}\n")
+    print(f"Avg Angle Error: {average_angle_error}, Avg Position Error: {average_position_error}, Catastrophic Failures: {catastrophic_failures}")
         
 def load_network(pickle_file):
     with open(pickle_file, "rb") as f:
@@ -46,10 +46,22 @@ def dump_network(pickle_file, nodes):
     with open(pickle_file, "wb") as f:
         pickle.dump(nodes, f)
 
+def random_pair():
+    angles = [random.uniform(gk.jointLowerLimits[i], gk.jointUpperLimits[i]) for i in range(len(gk.jointLowerLimits))]
+    position = gk.forward_kinematics(angles)
+    scaled_angles = [(angles[i] - gk.jointLowerLimits[i]) / (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) for i in range(len(angles))]
+    return position, angles, scaled_angles
+
 def predict(nodes: list[list[Node]], inputs):
     for layer in nodes:
         out = [node.output(inputs) for node in layer]
     return out
+
+def update_params(nodes, expected, actual, loss_derivative, inputs):
+    loss_derivatives = [loss_derivative(expected[i], actual[i]) for i in range(len(expected))]
+    for layer in reversed(nodes):
+        for node in layer:
+            node.update(loss_derivatives, inputs)
 
 if __name__ == "__main__":
     # Syntax = python neural_net.py <hidden layers> <activation_func_number> <loss_func_number> <training rounds> <load?> <save?>
@@ -89,5 +101,43 @@ if __name__ == "__main__":
                 arr.append(Node(activation_functions[activation_func_number], derivatives[activation_func_number], input_vector_size, nodes, layer, node_number))
 
     training_rounds = 0
-    average_error = 0.0
+    total_angle_error = 0.0
+    total_position_error = 0.0
     catastrophic_failures = 0
+
+    # TRAINING LOOP
+    try:
+        for r in range(rounds):
+            training_rounds += 1
+            # scaled are between 0 and 1
+            position, expected_angles, expected_scaled_angles = random_pair()
+            predicted_angles = predict(nodes, position)
+
+            unscaled_predicted_angles = [predicted_angles[i] * (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) + gk.jointLowerLimits[i] for i in range(len(predicted_angles))]
+            total_angle_error += sum([abs(expected_angles[i] - unscaled_predicted_angles[i]) for i in range(len(expected_angles))])
+
+            predicted_position = gk.forwardKinematics(unscaled_predicted_angles)
+            total_position_error += sum([abs(position[i] - predicted_position[i]) for i in range(len(position))])
+
+            if is_catastrophic_failure(unscaled_predicted_angles):
+                catastrophic_failures += 1
+
+            loss_derivs = [loss_derivatives[loss_func_number](expected, actual) for expected, actual in zip(expected_scaled_angles, predicted_angles)]
+            update_params(nodes, loss_derivs, position)
+
+            if training_rounds % 100 == 0:
+                # Log results and save network
+                if save:
+                    dump_network(pickle_file, nodes)
+
+                average_angle_error = total_angle_error / training_rounds / 5
+                average_position_error = total_position_error / training_rounds
+                log(log_file, average_angle_error, average_position_error, catastrophic_failures)
+
+                training_rounds = 0
+                average_angle_error = 0.0
+                average_position_error = 0.0   
+                catastrophic_failures = 0
+                
+    except: 
+        dump_network(pickle_file, nodes)
