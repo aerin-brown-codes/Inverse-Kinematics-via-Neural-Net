@@ -4,6 +4,7 @@ import sys
 import math
 import pickle
 import random
+import numpy as np
 
 input_vector_size = 6 # (x, y, z, alpha, beta, gamma)
 output_vector_size = 5 # (waist, shoulder, elbow, wrist, hand)
@@ -43,12 +44,18 @@ def load_network(pickle_file):
         return pickle.load(f)
 
 def dump_network(pickle_file, nodes):
+    network = []
+    for layer in nodes:
+        arr = []
+        for node in layer:
+            arr.append((node.weights, node.bias, node.layer, node.node_number))
+        network.append(arr)
     with open(pickle_file, "wb") as f:
-        pickle.dump(nodes, f)
+        pickle.dump(network, f)
 
 def random_pair():
     angles = [random.uniform(gk.jointLowerLimits[i], gk.jointUpperLimits[i]) for i in range(len(gk.jointLowerLimits))]
-    position = gk.forward_kinematics(angles)
+    position = list(gk.Mat2Pose(gk.forwardKinematics(np.array(angles))))
     scaled_angles = [(angles[i] - gk.jointLowerLimits[i]) / (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) for i in range(len(angles))]
     return position, angles, scaled_angles
 
@@ -73,20 +80,31 @@ if __name__ == "__main__":
     rounds = 100
     load = True
     save = True
-    if len(sys.argv) > 2:
-        hidden_layers = int(sys.argv[2])
-        activation_func_number = int(sys.argv[3])
-        loss_func_number = int(sys.argv[4])
-        rounds = int(sys.argv[5])
-        load = sys.argv[6].lower() == 'true'
-        save = sys.argv[7].lower() == 'true'
+    if len(sys.argv) > 1:
+        hidden_layers = int(sys.argv[1])
+        activation_func_number = int(sys.argv[2])
+        loss_func_number = int(sys.argv[3])
+        rounds = int(sys.argv[4])
+        load = sys.argv[5].lower() == 'true'
+        save = sys.argv[6].lower() == 'true'
 
     pickle_file = f"nn_h{hidden_layers}_o{activation_func_number}_l{loss_func_number}"
     log_file = f"nn_log_h{hidden_layers}_o{activation_func_number}_l{loss_func_number}.txt"
 
-    if load:
-        nodes = load_network(pickle_file)
-    else:
+    if load: # Retrieve from file
+        with open(pickle_file, "rb") as f:
+            network_data = pickle.load(f)
+        nodes = []
+        for layer in network_data:
+            arr = []
+            for node_data in layer:
+                weights, bias, layer_number, node_number = node_data
+                node = Node(activation_functions[activation_func_number], derivatives[activation_func_number], input_vector_size, nodes, layer_number, node_number)
+                node.weights = weights
+                node.bias = bias
+                arr.append(node)
+            nodes.append(arr)
+    else: # Create new network
         nodes = []
 
         for layer in range(hidden_layers + 1):
@@ -99,6 +117,7 @@ if __name__ == "__main__":
             
             for node_number in range(size):
                 arr.append(Node(activation_functions[activation_func_number], derivatives[activation_func_number], input_vector_size, nodes, layer, node_number))
+            nodes.append(arr)
 
     training_rounds = 0
     total_angle_error = 0.0
@@ -113,17 +132,20 @@ if __name__ == "__main__":
             position, expected_angles, expected_scaled_angles = random_pair()
             predicted_angles = predict(nodes, position)
 
+            for layer in nodes:
+                for node in layer:
+                    node.setup_gradients()
+
             unscaled_predicted_angles = [predicted_angles[i] * (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) + gk.jointLowerLimits[i] for i in range(len(predicted_angles))]
             total_angle_error += sum([abs(expected_angles[i] - unscaled_predicted_angles[i]) for i in range(len(expected_angles))])
 
-            predicted_position = gk.forwardKinematics(unscaled_predicted_angles)
+            predicted_position = gk.Mat2Pose(gk.forwardKinematics(unscaled_predicted_angles))
             total_position_error += sum([abs(position[i] - predicted_position[i]) for i in range(len(position))])
 
             if is_catastrophic_failure(unscaled_predicted_angles):
                 catastrophic_failures += 1
 
-            loss_derivs = [loss_derivatives[loss_func_number](expected, actual) for expected, actual in zip(expected_scaled_angles, predicted_angles)]
-            update_params(nodes, loss_derivs, position)
+            update_params(nodes, expected_scaled_angles, predicted_angles, loss_derivatives[loss_func_number], position)
 
             if training_rounds % 100 == 0:
                 # Log results and save network
@@ -139,5 +161,7 @@ if __name__ == "__main__":
                 average_position_error = 0.0   
                 catastrophic_failures = 0
                 
-    except: 
+    except Exception as e: 
+        print("FAILURE")
         dump_network(pickle_file, nodes)
+        raise e
