@@ -35,10 +35,10 @@ def is_catastrophic_failure(angles: list[float]) -> bool:
             return True
     return False
 
-def log(log_file, average_angle_error, average_position_error, catastrophic_failures, average_time):
+def log(log_file, average_angle_error, standard_deviation, average_position_error, catastrophic_failures, average_time):
     with open(log_file, "a") as f:
-        f.write(f"{average_angle_error},{average_position_error},{catastrophic_failures},{average_time}\n")
-    print(f"Avg Angle Error: {average_angle_error}, Avg Position Error: {average_position_error}, Catastrophic Failures: {catastrophic_failures}")#, Avg Time: {average_time}")
+        f.write(f"{average_angle_error},{standard_deviation},{average_position_error},{catastrophic_failures},{average_time}\n")
+    print(f"Avg Angle Error: {average_angle_error}, Standard Deviation: {standard_deviation}, Avg Position Error: {average_position_error}, Catastrophic Failures: {catastrophic_failures}")#, Avg Time: {average_time}")
 
 def dump_network(pickle_file, nodes):
     network = []
@@ -51,10 +51,16 @@ def dump_network(pickle_file, nodes):
     with open(pickle_file, "wb") as f:
         pickle.dump(network, f)
 
+def scale_down(angles: list[float]) -> list[float]:
+    return [0.25 + 0.5 * (angles[i] - gk.jointLowerLimits[i]) / (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) for i in range(len(angles))]
+
+def scale_up(angles: list[float]) -> list[float]:
+    return [gk.jointLowerLimits[i] + (angles[i] - 0.25) * (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) / 0.5 for i in range(len(angles))]
+
 def random_pair():
     angles = [random.uniform(gk.jointLowerLimits[i], gk.jointUpperLimits[i]) for i in range(len(gk.jointLowerLimits))]
     position = list(gk.Mat2Pose(gk.forwardKinematics(np.array(angles))))
-    scaled_angles = [(angles[i] - gk.jointLowerLimits[i]) / (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) for i in range(len(angles))]
+    scaled_angles = scale_down(angles)
     return position, angles, scaled_angles
 
 def predict(nodes: list[list[Node]], inputs):
@@ -72,7 +78,7 @@ def update_params(nodes, expected, actual, loss_derivative, inputs):
             node.update(losses, inputs)
 
 if __name__ == "__main__":
-    # Syntax = python neural_net.py <hidden layers> <activation_func_number> <loss_func_number> <training rounds> <load?> <save?>
+    # Syntax = python neural_net.py <hidden layers> <width> <activation_func_number> <loss_func_number> <training rounds> <load?> <save?> 
 
     # Set up parameters
     hidden_layers = 1
@@ -81,45 +87,50 @@ if __name__ == "__main__":
     rounds = 100
     load = True
     save = True
+    width = 12
     if len(sys.argv) > 1:
         hidden_layers = int(sys.argv[1])
-        activation_func_number = int(sys.argv[2])
-        loss_func_number = int(sys.argv[3])
-        rounds = int(sys.argv[4])
-        load = sys.argv[5].lower() == 'true'
-        save = sys.argv[6].lower() == 'true'
+        width = int(sys.argv[2])
+        activation_func_number = int(sys.argv[3])
+        loss_func_number = int(sys.argv[4])
+        rounds = int(sys.argv[5])
+        load = sys.argv[6].lower() == 'true'
+        save = sys.argv[7].lower() == 'true'
 
-    pickle_file = f"nn_h{hidden_layers}_o{activation_func_number}_l{loss_func_number}"
-    log_file = f"nn_log_h{hidden_layers}_o{activation_func_number}_l{loss_func_number}.txt"
+    pickle_file = f"nn_h{hidden_layers}_w{width}_a{activation_func_number}_l{loss_func_number}"
+    log_file = f"nn_log_h{hidden_layers}_w{width}_a{activation_func_number}_l{loss_func_number}.txt"
 
     if load: # Retrieve from file
         with open(pickle_file, "rb") as f:
             network_data = pickle.load(f)
         print(network_data)
         nodes = []
+        prev_size = input_vector_size
         for layer in network_data:
             arr = []
             for node_data in layer:
                 weights, bias, layer_number, node_number = node_data
-                node = Node(activation_functions[activation_func_number], derivatives[activation_func_number], input_vector_size, nodes, layer_number, node_number)
+                node = Node(activation_functions[activation_func_number], derivatives[activation_func_number], prev_size, nodes, layer_number, node_number)
                 node.weights = weights
                 node.bias = bias
                 arr.append(node)
             nodes.append(arr)
+            prev_size = len(arr)
     else: # Create new network
         nodes = []
-
+        prev_size = input_vector_size
         for layer in range(hidden_layers + 1):
             arr = []
             
             if layer == hidden_layers:
-                size = output_vector_size
+                num_nodes = output_vector_size
             else:
-                size = input_vector_size
-            
-            for node_number in range(size):
-                arr.append(Node(activation_functions[activation_func_number], derivatives[activation_func_number], input_vector_size, nodes, layer, node_number))
+                num_nodes = width
+
+            for node_number in range(num_nodes):
+                arr.append(Node(activation_functions[activation_func_number], derivatives[activation_func_number], prev_size, nodes, layer, node_number))
             nodes.append(arr)
+            prev_size = len(arr)
 
     for layer in nodes:
         for node in layer:
@@ -130,6 +141,7 @@ if __name__ == "__main__":
     total_position_error = 0.0
     catastrophic_failures = 0
     total_time = 0.0
+    total_deviation = 0.0
 
     # TRAINING LOOP
     try:
@@ -146,17 +158,18 @@ if __name__ == "__main__":
             #     for node in layer:
             #         node.setup_gradients()
 
-            unscaled_predicted_angles = [predicted_angles[i] * (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) + gk.jointLowerLimits[i] for i in range(len(predicted_angles))]
-            if r % 1000 == 0:
-                print(unscaled_predicted_angles)
-                print(expected_angles)
-                print()
-                print(predicted_angles)
-                print(expected_scaled_angles)
-                print()
-                print()
+            unscaled_predicted_angles = scale_up(predicted_angles)
+            # if r % 1000 == 0:
+            #     print(unscaled_predicted_angles)
+            #     print(expected_angles)
+            #     print()
+            #     print(predicted_angles)
+            #     print(expected_scaled_angles)
+            #     print()
+            #     print()
 
             total_angle_error += sum([abs(expected_angles[i] - unscaled_predicted_angles[i]) for i in range(len(expected_angles))])
+            total_deviation += sum([(expected_angles[i] - unscaled_predicted_angles[i]) ** 2 for i in range(len(expected_angles))])
 
             predicted_position = gk.Mat2Pose(gk.forwardKinematics(unscaled_predicted_angles))
             total_position_error += sum([abs(position[i] - predicted_position[i]) for i in range(len(position))])
@@ -174,13 +187,16 @@ if __name__ == "__main__":
                 average_angle_error = total_angle_error / training_rounds / 5
                 average_position_error = total_position_error / training_rounds / 6
                 average_time = total_time / training_rounds
-                log(log_file, average_angle_error, average_position_error, catastrophic_failures, average_time)
+                standard_deviation = math.sqrt(total_deviation / training_rounds / 5)
+                log(log_file, average_angle_error, standard_deviation, average_position_error, catastrophic_failures, average_time)
 
                 training_rounds = 0
                 total_angle_error = 0.0
                 total_position_error = 0.0   
                 catastrophic_failures = 0
                 total_time = 0.0
+                standard_deviation = 0.0
+                total_deviation = 0.0
                 
     except Exception as e: 
         print("FAILURE")
