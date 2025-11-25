@@ -17,6 +17,9 @@ def log(log_file, average_angle_error, standard_deviation, average_position_erro
 def is_catastrophic_failure(angles: list[float]) -> bool:
     for i in range(len(angles)):
         if angles[i] < gk.jointLowerLimits[i] or angles[i] > gk.jointUpperLimits[i]:
+            # print(i)
+            # print(angles[i])
+            # print()
             return True
     return False
 
@@ -26,10 +29,10 @@ def dump_polys(pickle_file, polynomials, constants):
         pickle.dump(data, f)
 
 def scale_down_angles(angles: list[float]) -> list[float]:
-    return [0.25 + 0.5 * (angles[i] - gk.jointLowerLimits[i]) / (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) for i in range(len(angles))]
+    return [(angles[i] - gk.jointLowerLimits[i]) / (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) for i in range(len(angles))]
 
 def scale_up_angles(angles: list[float]) -> list[float]:
-    return [gk.jointLowerLimits[i] + (angles[i] - 0.25) * (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) / 0.5 for i in range(len(angles))]
+    return [gk.jointLowerLimits[i] + angles[i] * (gk.jointUpperLimits[i] - gk.jointLowerLimits[i]) for i in range(len(angles))]
 
 def scale_down_position(position: list[float]) -> list[float]:
     return [(position[i] - position_approx_mins[i]) / (position_approx_maxs[i] - position_approx_mins[i]) for i in range(len(position))]
@@ -76,7 +79,7 @@ if __name__ == "__main__":
         with open(pickle_file, "rb") as f:
             data = pickle.load(f)
         print(data)
-        polynomials, constants = data
+        coefficients, constants = data
     else: # Create new model
         coefficients = [[0 for _ in range(len(combinations))] for i in range(5)] # 5 outputs need 5 polynomials
         constants = [0 for _ in range(5)]
